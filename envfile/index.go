@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -117,33 +118,52 @@ func loadFile(filePath string) error {
 		}
 	}()
 
+	variables := make(map[string]string)
+	variableRegex := regexp.MustCompile(`\{\$([a-zA-Z0-9_]+)\}`)
+
+	lineNumber := 0
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
+		lineNumber++
 		line := scanner.Text()
 
+		line = clearAfterHash(line)
+
 		line = strings.TrimSpace(line)
-		if len(line) == 0 || strings.HasPrefix(line, "#") {
+
+		if len(line) == 0 {
 			continue
 		}
 
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			log.Printf("Warning: Invalid line format in '%s': '%s'. Expected 'key=value'.", filePath, line)
-			continue
-		}
-
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
+		key, value := splitLine(line)
 
 		if key == "" {
-			log.Printf("Warning: Empty key found in '%s': '%s'. Skipping.", filePath, line)
+			log.Printf("Warning: Empty key found in '%s' at line %d: '%s'. Skipping.", filePath, lineNumber, line)
 			continue
 		}
 
-		err := os.Setenv(key, value)
-		if err != nil {
-			return fmt.Errorf("error: unable to set environment variable '%s': %v", key, err)
+		if key[0] == '$' {
+
+			variables[key] = value
+
+		} else {
+
+			value = variableRegex.ReplaceAllStringFunc(value, func(s string) string {
+				k := s[1 : len(s)-1]
+				if p, exists := variables[k]; exists {
+					return p
+				}
+				log.Printf("Warning: variable '%s' not found in '%s' at line %d.", s, filePath, lineNumber)
+				return ""
+			})
+
+			err := os.Setenv(key, value)
+			if err != nil {
+				return fmt.Errorf("error: unable to set environment variable '%s': %v", key, err)
+			}
+
 		}
+
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -151,4 +171,20 @@ func loadFile(filePath string) error {
 	}
 
 	return nil
+}
+
+func clearAfterHash(s string) string {
+	index := strings.Index(s, "#")
+	if index != -1 {
+		return s[:index]
+	}
+	return s
+}
+
+func splitLine(s string) (key string, value string) {
+	index := strings.Index(s, "=")
+	if index == -1 {
+		return s, ""
+	}
+	return s[:index], s[index+1:]
 }
